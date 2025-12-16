@@ -139,7 +139,7 @@ def dog_postprocess_hsv(bgr_u8: np.ndarray, p: DogPostParams) -> np.ndarray:
     S = S * (1.0 - p.cyan_desat * w)
 
     # (B) Two-hue compression toward blue and yellow attractors (2-hue phenomenon)
-    is_blue = H >= p.blue_cutoff
+    is_blue = (H >= p.blue_cutoff) & (H <= 160.0)
     H2 = H.copy()
     H2[is_blue] = (1.0 - p.blue_compress) * H[is_blue] + p.blue_compress * p.blue_h
     H2[~is_blue] = (1.0 - p.yellow_compress) * H[~is_blue] + p.yellow_compress * p.yellow_h
@@ -203,15 +203,15 @@ def default_color_params() -> ColorSimParams:
 
     # Visualization parameters (not physiological constants) per Theory.md §9A
     dog_post = DogPostParams(
-        cyan_h0=90.0,
+        cyan_h0=100.0,
         cyan_sigma=12.0,
-        cyan_desat=0.70,
+        cyan_desat=0.65,
         blue_h=120.0,
         yellow_h=30.0,
         blue_cutoff=95.0,
-        blue_compress=0.70,
-        yellow_compress=0.55,
-        sat_global=0.90,
+        blue_compress=0.55,
+        yellow_compress=0.40,
+        sat_global=0.85,
     )
 
     return ColorSimParams(vienot=vienot, dog_post=dog_post)
