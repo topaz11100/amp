@@ -51,7 +51,9 @@ out = simulate_animal_color(bgr, animal, params)
 
 # 4) 클릭 기반 초점/심도 (Theory.md §7)
 rgb_disp = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
-coords = streamlit_image_coordinates(rgb_disp, key="img")
+display_width = 720
+st.caption("👇 이미지에서 초점을 맞출 위치를 클릭하세요")
+coords = streamlit_image_coordinates(rgb_disp, key="img", width=display_width)
 
 st.subheader("초점/심도(클릭 기반)")
 H, W = out.shape[:2]
@@ -62,7 +64,12 @@ pow_p = st.slider("blur falloff p", 1.0, 4.0, 2.0)
 levels = st.slider("blur levels", 6, 20, 12)
 
 if coords is not None:
-    x0, y0 = int(coords["x"]), int(coords["y"])
+    display_w = float(coords.get("width", display_width)) or display_width
+    display_h = float(coords.get("height", display_width * H / W)) or (display_width * H / W)
+    scale_x = W / display_w
+    scale_y = H / display_h
+    x0 = int(np.clip(round(coords["x"] * scale_x), 0, W - 1))
+    y0 = int(np.clip(round(coords["y"] * scale_y), 0, H - 1))
     blur_p = FocusBlurParams(
         r0=float(r0),
         r1=float(r1),
@@ -72,6 +79,7 @@ if coords is not None:
     )
     out = apply_focus_blur_bgr(out, x0, y0, blur_p)
 
+st.subheader("🖼️ Simulation Result")
 st.image(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
 
 png_bytes = bgr_to_png_bytes(out)
