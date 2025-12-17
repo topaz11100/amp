@@ -40,7 +40,8 @@ if research_mode and animal == "dog":
         cyan_desat=st.slider("cyan_desat", 0.0, 1.0, float(params.dog_post.cyan_desat)),
         blue_h=st.slider("blue_h(H)", 0.0, 179.0, float(params.dog_post.blue_h)),
         yellow_h=st.slider("yellow_h(H)", 0.0, 179.0, float(params.dog_post.yellow_h)),
-        blue_cutoff=st.slider("blue_cutoff(H)", 0.0, 179.0, float(params.dog_post.blue_cutoff)),
+        blue_start=st.slider("blue_start(H)", 0.0, 179.0, float(params.dog_post.blue_start)),
+        blue_end=st.slider("blue_end(H)", 0.0, 179.0, float(params.dog_post.blue_end)),
         blue_compress=st.slider("blue_compress", 0.0, 1.0, float(params.dog_post.blue_compress)),
         yellow_compress=st.slider("yellow_compress", 0.0, 1.0, float(params.dog_post.yellow_compress)),
         sat_global=st.slider("sat_global", 0.0, 1.0, float(params.dog_post.sat_global)),
@@ -51,23 +52,25 @@ out = simulate_animal_color(bgr, animal, params)
 
 # 4) 클릭 기반 초점/심도 (Theory.md §7)
 rgb_disp = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
-display_width = 720
+display_width = min(720, rgb_disp.shape[1])  # Fix: lock render width to avoid coordinate mismatch
 st.caption("👇 이미지에서 초점을 맞출 위치를 클릭하세요")
 coords = streamlit_image_coordinates(rgb_disp, key="img", width=display_width)
 
 st.subheader("초점/심도(클릭 기반)")
 H, W = out.shape[:2]
 r0 = st.slider("초점 반경 r0", 0, min(H, W) // 2, int(0.15 * min(H, W)))
-r1 = st.slider("블러 시작 r1", r0 + 1, int(np.hypot(H, W)), int(0.6 * np.hypot(H, W)))
+r1 = st.slider("블러 최대 도달 반경 (r1)", r0 + 1, int(np.hypot(H, W)), int(0.6 * np.hypot(H, W)))
 sigma_max = st.slider("최대 blur sigma", 0.0, 30.0, 16.0)
 pow_p = st.slider("blur falloff p", 1.0, 4.0, 2.0)
 levels = st.slider("blur levels", 6, 20, 12)
 
 if coords is not None:
-    display_w = float(coords.get("width", display_width)) or display_width
-    display_h = float(coords.get("height", display_width * H / W)) or (display_width * H / W)
-    scale_x = W / display_w
-    scale_y = H / display_h
+    orig_w = float(coords.get("original_width", W)) or float(W)
+    orig_h = float(coords.get("original_height", H)) or float(H)
+    disp_w = float(coords.get("displayed_width", coords.get("width", display_width))) or float(display_width)
+    disp_h = float(coords.get("displayed_height", coords.get("height", display_width * H / W))) or (display_width * H / W)
+    scale_x = orig_w / disp_w
+    scale_y = orig_h / disp_h
     x0 = int(np.clip(round(coords["x"] * scale_x), 0, W - 1))
     y0 = int(np.clip(round(coords["y"] * scale_y), 0, H - 1))
     blur_p = FocusBlurParams(
