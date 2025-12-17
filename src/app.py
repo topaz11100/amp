@@ -16,18 +16,6 @@ from utils import bgr_to_png_bytes, decode_upload, resize_by_max_side, resize_to
 
 st.set_page_config(page_title="개/고양이 시점 이미지 변환")
 
-st.markdown(
-    """
-    <style>
-    .block-container {
-        padding: 1.2rem 2rem;
-        max-width: 100%;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
 DISPLAY_MAX_W = 1000
 DISPLAY_MAX_H = 700
 
