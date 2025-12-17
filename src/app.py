@@ -12,7 +12,24 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 
 from color_sim import ColorSimParams, DogPostParams, default_color_params, simulate_animal_color
 from focus_blur import FocusBlurParams, apply_focus_blur_bgr
-from utils import bgr_to_png_bytes, decode_upload, resize_by_max_side
+from utils import bgr_to_png_bytes, decode_upload, resize_by_max_side, resize_to_fit
+
+st.set_page_config(page_title="개/고양이 시점 이미지 변환", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding: 1.2rem 2rem;
+        max-width: 100%;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+DISPLAY_MAX_W = 1000
+DISPLAY_MAX_H = 700
 
 
 st.title("개/고양이 시점 이미지 변환")
@@ -60,27 +77,31 @@ with st.spinner("색 변환(선형화→LMS→동물 시점) 계산 중…"):
     out = simulate_animal_color(bgr, animal, params)
 
 # 4) 클릭 기반 초점/심도 (Theory.md §7)
+H, W = out.shape[:2]
 rgb_disp = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
-display_width = min(720, rgb_disp.shape[1])  # Fix: lock render width to avoid coordinate mismatch
+rgb_click, scale_x, scale_y = resize_to_fit(
+    rgb_disp, DISPLAY_MAX_W, DISPLAY_MAX_H, allow_upscale=False
+)
 st.caption("👇 이미지에서 초점을 맞출 위치를 클릭하세요")
-coords = streamlit_image_coordinates(rgb_disp, key="img", width=display_width)
+coords = streamlit_image_coordinates(rgb_click, key="img")
 
 st.subheader("초점/심도(클릭 기반)")
-H, W = out.shape[:2]
-r0 = st.slider("초점 반경 r0", 0, min(H, W) // 2, int(0.15 * min(H, W)))
-r1 = st.slider("블러 최대 도달 반경 (r1)", r0 + 1, int(np.hypot(H, W)), int(0.6 * np.hypot(H, W)))
-sigma_max = st.slider("최대 blur sigma", 0.0, 30.0, 16.0)
-pow_p = st.slider("blur falloff p", 1.0, 4.0, 2.0)
-levels = st.slider("blur levels", 6, 20, 12)
+
+if research_mode:
+    r0 = st.slider("초점 반경 r0", 0, min(H, W) // 2, int(0.15 * min(H, W)))
+    r1 = st.slider("블러 최대 도달 반경 (r1)", r0 + 1, int(np.hypot(H, W)), int(0.6 * np.hypot(H, W)))
+    sigma_max = st.slider("최대 blur sigma", 0.0, 30.0, 16.0)
+    pow_p = st.slider("blur falloff p", 1.0, 4.0, 2.0)
+    levels = st.slider("blur levels", 6, 20, 12)
+else:
+    st.caption("연구용 모드에서 초점 파라미터를 조절할 수 있습니다.")
+    r0 = int(0.15 * min(H, W))
+    r1 = int(0.6 * np.hypot(H, W))
+    sigma_max = 16.0
+    pow_p = 2.0
+    levels = 12
 
 if coords is not None:
-    # streamlit-image-coordinates reports click in display space; map back to processed image space
-    orig_w = float(coords.get("original_width", W)) or float(W)
-    orig_h = float(coords.get("original_height", H)) or float(H)
-    disp_w = float(coords.get("displayed_width", coords.get("width", display_width))) or float(display_width)
-    disp_h = float(coords.get("displayed_height", coords.get("height", display_width * H / W))) or (display_width * H / W)
-    scale_x = orig_w / disp_w
-    scale_y = orig_h / disp_h
     x0 = int(np.clip(round(coords["x"] * scale_x), 0, W - 1))
     y0 = int(np.clip(round(coords["y"] * scale_y), 0, H - 1))
     blur_p = FocusBlurParams(
@@ -94,7 +115,9 @@ if coords is not None:
         out = apply_focus_blur_bgr(out, x0, y0, blur_p)
 
 st.subheader("🖼️ Simulation Result")
-st.image(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
+rgb_out = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+rgb_out_disp, _, _ = resize_to_fit(rgb_out, DISPLAY_MAX_W, DISPLAY_MAX_H, allow_upscale=False)
+st.image(rgb_out_disp)
 
 png_bytes = bgr_to_png_bytes(out)
 st.download_button("결과 다운로드 (PNG)", png_bytes, file_name="animal_view.png", mime="image/png")
