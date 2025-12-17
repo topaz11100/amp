@@ -37,3 +37,28 @@ def bgr_to_png_bytes(bgr: np.ndarray) -> bytes:
     if not success:
         raise ValueError("PNG encoding failed")
     return buf.tobytes()
+
+
+def resize_to_fit(
+    img: np.ndarray, max_w: int, max_h: int, allow_upscale: bool = False
+) -> tuple[np.ndarray, float, float]:
+    """Resize image to fit within (max_w, max_h) while keeping aspect ratio.
+
+    Returns resized image and per-axis scale factors for mapping display → original coordinates.
+    """
+
+    h, w = img.shape[:2]
+    scale = min(max_w / float(w), max_h / float(h))
+    if not allow_upscale:
+        scale = min(scale, 1.0)
+
+    new_w, new_h = int(round(w * scale)), int(round(h * scale))
+    if new_w == 0 or new_h == 0:
+        return img, 1.0, 1.0
+
+    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(img, (new_w, new_h), interpolation=interpolation)
+
+    scale_x = w / float(new_w)
+    scale_y = h / float(new_h)
+    return resized, scale_x, scale_y
