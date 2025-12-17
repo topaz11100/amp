@@ -308,16 +308,42 @@ dog 논문은 스펙트럼이 두 색상군(blue vs yellow)으로 요약되는 �
 이를 HSV에서 다음처럼 구현한다.
 
 - 임계값 $H_c$로 “blue 쪽”과 “yellow 쪽”을 나눈다.
-- 각 영역의 hue를 목표 hue($H_b$ 또는 $H_y$)로 당긴다(affine pull):
+- 각 영역의 Hue를 목표 Hue($H_b$ 또는 $H_y$)로 당긴다.
+
+중요: OpenCV HSV의 Hue $H$는 $0\sim179$ 범위이며, $0$과 $179$는 연결된 **원형(circular) 변수**다.
+따라서 단순 선형 보간
 
 $$
 H\leftarrow (1-\beta)H+\beta H_{target}
 $$
 
+을 그대로 쓰면 $0/179$ 경계(적색 영역)에서 “긴 경로”로 이동하는 아티팩트가 생길 수 있다.
+
+이를 방지하기 위해, 보간은 반드시 **최단 각도 거리(shortest angular distance)**를 따라야 한다.
+Hue 주기를 $P=180$이라 두고, 다음의 wrapping 연산을 정의한다.
+
+$$
+\operatorname{wrap}_P(x)=\left(\left(x+\frac{P}{2}\right)\bmod P\right)-\frac{P}{2}
+$$
+
+그러면 목표 Hue로의 최단 방향 변화량은
+
+$$
+\Delta H=\operatorname{wrap}_P(H_{target}-H)
+$$
+
+이며, 원형 보간은
+
+$$
+H\leftarrow (H+\beta\,\Delta H)\bmod P
+$$
+
+로 구현한다.
+
 $H_{target}$은 blue 영역에서는 $H_b$, yellow 영역에서는 $H_y$이며,
 $\beta$가 클수록 더 강하게 “두 덩어리”로 뭉친다.
 
-이 역시 코드가 그대로 구현하고 있다.
+(구현 팁) 실수 연산 후 최종 저장 시에는 $H$를 $[0,P)$로 wrap한 뒤 OpenCV HSV 규격에 맞게 uint8로 변환한다.
 
 ### 7.3 단계 C: 전역 채도 스케일(전체 과포화 억제)
 “2-hue로 뭉치게 하는 압력”은 종종 인공적인 색을 만든다. 이를 완화하려고 전역 채도 스케일 $s_g$를 곱한다.
@@ -1001,438 +1027,16 @@ def default_color_params() -> ColorSimParams:
 
     # dog 후처리 기본값(시각화 파라미터): 보고서 9A의 절차로 확정한 값을 여기에 넣는다.
     dog_post = DogPostParams(
-        cyan_h0=90.0,
+        cyan_h0=100.0,
         cyan_sigma=12.0,
-        cyan_desat=0.70,
+        cyan_desat=0.65,
         blue_h=120.0,
         yellow_h=30.0,
         blue_cutoff=95.0,
-        blue_compress=0.70,
-        yellow_compress=0.55,
-        sat_global=0.90,
+        blue_compress=0.55,
+        yellow_compress=0.40,
+        sat_global=0.85,
     )
-
-    return ColorSimParams(vienot=vienot, dog_post=dog_post)
-```
-
-## 8.3 focus_blur.py
-
-```python
-from __future__ import annotations
-
-from dataclasses import dataclass
-import numpy as np
-import cv2
-
-
-@dataclass
-class FocusBlurParams:
-    r0: float
-    r1: float
-    sigma_max: float
-    p: float
-    levels: int
-
-
-def apply_focus_blur_bgr(bgr_u8: np.ndarray, x0: int, y0: int, p: FocusBlurParams) -> np.ndarray:
-    H, W = bgr_u8.shape[:2]
-
-    # blur levels
-    sigma_levels = np.linspace(0.0, p.sigma_max, p.levels, dtype=np.float32)
-
-    # stack
-    stack = []
-    for s in sigma_levels:
-        if s <= 1e-6:
-            stack.append(bgr_u8.astype(np.float32))
-        else:
-            stack.append(cv2.GaussianBlur(bgr_u8, (0, 0), sigmaX=float(s), sigmaY=float(s)).astype(np.float32))
-    stack = np.stack(stack, axis=0)  # (N,H,W,3)
-
-    yy, xx = np.mgrid[0:H, 0:W]
-    d = np.sqrt((xx - x0) ** 2 + (yy - y0) ** 2).astype(np.float32)
-
-    t = (d - p.r0) / max(1e-6, (p.r1 - p.r0))
-    t = np.clip(t, 0.0, 1.0)
-    t = t * t * (3.0 - 2.0 * t)  # smoothstep
-
-    sigma = p.sigma_max * np.power(t, p.p)
-
-    idx1 = np.searchsorted(sigma_levels, sigma, side="right")
-    idx1 = np.clip(idx1, 1, len(sigma_levels) - 1)
-    idx0 = idx1 - 1
-
-    s0 = sigma_levels[idx0]
-    s1 = sigma_levels[idx1]
-    alpha = (sigma - s0) / np.maximum(1e-6, (s1 - s0))
-
-    out = stack[0].copy()
-    for k in range(len(sigma_levels) - 1):
-        mask = (idx0 == k)
-        if not np.any(mask):
-            continue
-        a = alpha[mask][:, None]
-        out[mask] = (1.0 - a) * stack[k][mask] + a * stack[k + 1][mask]
-
-    return np.clip(out, 0, 255).astype(np.uint8)
-```
-
-## 8.4 app.py(단일 버전, 연구용 모드 토글)
-
-```python
-import streamlit as st
-import numpy as np
-import cv2
-from streamlit_image_coordinates import streamlit_image_coordinates
-
-from color_sim import default_color_params, simulate_animal_color, DogPostParams
-from focus_blur import FocusBlurParams, apply_focus_blur_bgr
-
-
-def decode_upload(uploaded_file):
-    data = np.frombuffer(uploaded_file.read(), np.uint8)
-    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("업로드한 파일을 읽을 수 없습니다. (파일 손상/미지원 형식)")
-    return img
-
-
-st.title("개/고양이 시점 이미지 변환")
-
-uploaded = st.file_uploader("이미지 업로드", type=["png", "jpg", "jpeg"])
-if uploaded is None:
-    st.stop()
-
-bgr = decode_upload(uploaded)
-H0, W0 = bgr.shape[:2]
-
-# 성능 팁: 큰 이미지는 리사이즈(긴 변 기준)
-max_side = st.select_slider("처리 해상도(긴 변)", options=[960, 1280, 1920, 2560], value=1280)
-scale = max_side / max(H0, W0)
-if scale < 1.0:
-    bgr = cv2.resize(bgr, (int(W0 * scale), int(H0 * scale)), interpolation=cv2.INTER_AREA)
-
-animal = st.selectbox("동물", ["dog", "cat"])
-research_mode = st.checkbox("연구용 모드(파라미터 조절)", value=False)
-
-# 1) 기본 파라미터 로드(함수 인수 기반)
-params = default_color_params()
-
-# 2) 연구용 모드일 때만 dog 후처리 파라미터 조절(하지만 함수는 항상 인수 기반)
-if research_mode and animal == "dog":
-    st.subheader("Dog 후처리 파라미터(시각화 파라미터)")
-    params.dog_post = DogPostParams(
-        cyan_h0=st.slider("cyan_h0(H)", 0.0, 179.0, float(params.dog_post.cyan_h0)),
-        cyan_sigma=st.slider("cyan_sigma", 1.0, 30.0, float(params.dog_post.cyan_sigma)),
-        cyan_desat=st.slider("cyan_desat", 0.0, 1.0, float(params.dog_post.cyan_desat)),
-        blue_h=st.slider("blue_h(H)", 0.0, 179.0, float(params.dog_post.blue_h)),
-        yellow_h=st.slider("yellow_h(H)", 0.0, 179.0, float(params.dog_post.yellow_h)),
-        blue_cutoff=st.slider("blue_cutoff(H)", 0.0, 179.0, float(params.dog_post.blue_cutoff)),
-        blue_compress=st.slider("blue_compress", 0.0, 1.0, float(params.dog_post.blue_compress)),
-        yellow_compress=st.slider("yellow_compress", 0.0, 1.0, float(params.dog_post.yellow_compress)),
-        sat_global=st.slider("sat_global", 0.0, 1.0, float(params.dog_post.sat_global)),
-    )
-
-# 3) 색 변환(고정 알고리즘, 인수 기반)
-out = simulate_animal_color(bgr, animal, params)
-
-# 4) 클릭 초점(색 변환 결과 위에서 클릭)
-rgb_disp = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
-coords = streamlit_image_coordinates(rgb_disp, key="img")
-
-st.subheader("초점/심도(클릭 기반)")
-H, W = out.shape[:2]
-r0 = st.slider("초점 반경 r0", 0, min(H, W) // 2, int(0.15 * min(H, W)))
-r1 = st.slider("블러 시작 r1", r0 + 1, int(np.hypot(H, W)), int(0.6 * np.hypot(H, W)))
-sigma_max = st.slider("최대 blur sigma", 0.0, 30.0, 16.0)
-pow_p = st.slider("blur falloff p", 1.0, 4.0, 2.0)
-levels = st.slider("blur levels", 6, 20, 12)
-
-if coords is not None:
-    x0, y0 = int(coords["x"]), int(coords["y"])
-    blur_p = FocusBlurParams(r0=float(r0), r1=float(r1), sigma_max=float(sigma_max), p=float(pow_p), levels=int(levels))
-    out = apply_focus_blur_bgr(out, x0, y0, blur_p)
-
-st.image(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
-```
-
----
-
-# 9. 파라미터 출처(정직한 구분)
-
-> **이 섹션의 역할:** 교수님이 가장 중요하게 보는 “출처/정당성” 파트.  
-> **원칙:** 논문에서 ‘그대로 가져온 수치’와, ‘근사/시각화 목적의 튜닝값’을 명확히 분리해 과학적 정직성을 지킨다.
-
-## 9.1 논문에서 ‘수치 그대로’ 가져온 값
-
-* Viénot et al.(1999)
-
-  * RGB→LMS 행렬(Eq.(4))
-  * deutan LMS 변환 행렬(Eq.(5))
-  * domain shrink affine 계수(Eq.(2))
-  * 감마 근사(2.2) 기반 선형화/복원 흐름
-
-## 9.2 논문 원칙에 따라 ‘계산으로 얻은 값’
-
-* `M_LMS2RGB = inv(M_RGB2LMS)`
-
-  * 논문은 “역행렬로 복원” 원칙을 쓰며, 역행렬 수치는 구현자가 계산해 재현 가능
-
-## 9.3 논문 서술(현상)을 sRGB에서 재현하기 위한 ‘시각화 파라미터’
-
-* dog 후처리 파라미터(DogPostParams)
-
-  * 근거 현상: 2-hue(blue/yellow), blue-green 중립대역(gray), neutral point shift 등 (Vision in dogs, 1995)
-  * 단, 입력이 sRGB 이미지이므로 nm 기반 정량 파라미터를 직접 쓸 수 없어 HSV 대역/압축 강도를 도입
-
----
-
-# 9A. 경험(시각화) 파라미터 정당화/선정 절차
-
-> **이 섹션의 역할:** dog HSV 파라미터를 “감(감각)”이 아니라 **재현 가능한 프로토콜**로 결정하도록 만든다.  
-> **핵심:** 논문 문장(480nm neutral point, 2-hue, cyan-gray)을 직접 ‘수치’로 옮기기 어렵기 때문에, 이미지 관찰 제약을 만족하도록 튜닝 절차를 설계한다.
-
-## 9A.1 정당화 원칙
-
-1. 논문이 제공하는 것은 ‘현상 제약(qualitative constraint)’이다.
-2. 입력은 sRGB 3채널 이미지이며 파장 정보를 복원할 수 없다.
-3. 따라서 본 과제는 현상 제약을 sRGB 색공간(HSV)에서 강제하는 공학적 후처리를 사용한다.
-4. 후처리 수치는 생리 상수가 아니라 시각화 파라미터이며, 아래 절차로 선택해 재현 가능하게 만든다.
-
-## 9A.2 선정 프로토콜(실험 프로토콜+기본값 추천까지)
-
-이 절의 목표는 “dog HSV 후처리 파라미터가 왜 필요한지”를 논문 문장으로 정당화하고,
-그 숫자를 임의 감(감각)으로 정하지 않고 **재현 가능한 절차로 고정**하는 것이다.
-
-dog 논문이 제공하는 핵심 제약은 다음 4개다.
-
-- “두 개의 색상군”으로 요약되는 경향: 430~475nm는 blue로, 500~620nm는 yellow로 인식될 가능성이 큼
-- 475~485nm(blue-green)는 white 또는 gray로 보일 가능성이 큼
-- spectral neutral point가 480nm로, 사람 deuteranopia(505nm)보다 더 파란쪽으로 이동
-- 입력이 sRGB 3채널이므로, 픽셀에서 파장(nm)을 역산해 그대로 강제하는 것은 불가능
-
-따라서 본 프로젝트는 “Viénot deutan(정량)” 위에 “HSV 현상 강제(정성 제약)”를 얹어,
-위 문장들이 시각적으로 드러나도록 만든다.
-
----
-
-### 9A.2.1 튜닝용 테스트 입력(필수 3종+선택)
-
-dog 파라미터는 자연 이미지 몇 장만으로 맞추면 재현성이 떨어진다.
-반드시 아래 3종의 “합성 테스트”를 같이 사용한다.
-
-1) Hue Wheel(색상 원)
-- 배경은 중성 회색, 원형으로 hue를 0~179(또는 0~360deg) 연속 변화
-- S는 255 고정, V는 255(또는 200~255 범위) 고정
-
-2) Spectrum Strip(스펙트럼 스트립, proxy)
-- 목적: “480nm 근처에서 회색화가 일어나는가”를 정량적으로 잡기 위한 장치
-- 구현은 두 가지 중 하나를 선택(둘 다 proxy이며, ‘물리 진실’이 아니라 ‘튜닝 도구’임)
-  - (A) HSV 기반 proxy: H를 0~179로 선형 스윕, S=255,V=255로 만들기
-  - (B) wavelength→sRGB 근사식을 써서 400~700nm 색 띠를 만들기(근사)
-
-3) Gray Ramp+Skin Patch
-- 회색 램프(검정→흰색)가 변환 후에도 색이 끼지 않는지 확인
-- 피부톤/목재/흙색 같이 “현실에서 중요한 색”이 과도하게 이상해지지 않는지 확인
-
-선택(권장): 자연 이미지 20~50장(실내/실외/원색/자연/인물/야간 포함)
-
----
-
-### 9A.2.2 논문 문장을 HSV 제약으로 번역
-
-OpenCV HSV에서 $H\in[0,179]$, $S\in[0,255]$, $V\in[0,255]$이다.
-
-- 475~485nm(gray band) 제약은 HSV에서 “cyan(blue-green) 근처의 채도 감소”로 번역한다.
-  - 가우시안 가중치 $w(H)$를 두고, $S\leftarrow S(1-\alpha w)$로 만들면
-    특정 hue 대역만 회색화(채도 감소)된다.
-- 2-hue 제약은 HSV에서 “두 개의 attractor hue로 끌어당김”으로 번역한다.
-  - $H\leftarrow(1-\beta)H+\beta H_{\mathrm{target}}$ 형태로 hue를 압축하면
-    색이 두 덩어리(blue/yellow)로 모인다.
-- 480nm neutral point 제약은 “스펙트럼 스트립에서 최소 채도 지점이 480nm proxy 부근에 오도록”
-  cyan 중심 $H_0$를 조정하는 문제로 번역한다.
-
-중요: 여기서 $H_0$는 “480nm의 생리 상수”가 아니다.
-$H_0$는 “입력 sRGB/HSV에서 480nm 현상이 가장 잘 드러나는 위치”를 재현하는 **시각화 파라미터**다.
-
----
-
-### 9A.2.3 튜닝 순서(권장)
-
-dog 파라미터는 서로 영향을 준다. 아래 순서를 지키면 빠르고 재현성 있게 맞출 수 있다.
-
-0) 기준 고정
-- Viénot deutan 변환은 고정(이 부분은 논문 수치)
-- dog 후처리만 조절(HSV 단계만)
-
-1) cyan 중심과 폭을 먼저 맞춘다: `cyan_h0`, `cyan_sigma`
-- Spectrum Strip에서 “회색화 대역”이 너무 넓거나 좁지 않게 만든다.
-- Gray band(475~485nm)가 “좁은 대역”이라는 문장에 맞게,
-  `cyan_sigma`는 과도하게 크게 잡지 않는다(권장 8~16).
-
-2) 회색화 강도를 맞춘다: `cyan_desat`
-- Hue Wheel에서 cyan 부근이 “채도가 빠져 회색에 가까워지는지”를 확인한다.
-- 동시에 Gray Ramp에서 회색에 색이 끼지 않는지 확인한다.
-
-3) 두 목표 hue를 잡는다: `blue_h`, `yellow_h`
-- 처음에는 표준 HSV에서 blue와 yellow에 해당하는 목표값으로 시작한다.
-- 이후 자연 이미지에서 “blue와 yellow로 뭉치는 느낌”이 부족하면 목표값을 소폭 이동한다.
-
-4) 분기 경계를 정한다: `blue_cutoff`
-- 가장 단순한 정책은 `blue_cutoff≈cyan_h0`로 두는 것이다.
-- 직관: neutral band(회색화) 근처를 기준으로 “그보다 hue가 큰 쪽은 blue군으로 압축”한다.
-
-5) 압축 강도를 조정한다: `blue_compress`, `yellow_compress`
-- 목표: hue 히스토그램이 2개의 피크로 더 뾰족해지되,
-  인공적인 밴딩/포스터라이즈가 눈에 띄지 않게 한다.
-- 보통 `blue_compress`를 `yellow_compress`보다 약간 크게 시작하는 편이 안정적이다.
-
-6) 전체 채도를 마지막에 조정한다: `sat_global`
-- 전체적으로 “색이 덜 화려해 보이는” 경향을 반영한다.
-- 너무 낮추면 모든 것이 회색으로 죽는다. 마지막에 미세 조정한다.
-
----
-
-### 9A.2.4 정량 지표(계산 가능한 형태로 정의)
-
-정량 지표는 “튜닝의 방향성”을 잡는 용도다.
-정량이 좋아도 사람이 보기엔 이상할 수 있으므로, 반드시 정성 평가를 병행한다.
-
-아래는 구현이 쉬운 지표 4개다.
-
-#### (1) cyan-gray 만족도: $J_{\mathrm{cyan}}$
-
-HSV에서 cyan band 가중치 $w(H)$는
-
-$$
-d_H=\min(|H-H_0|,180-|H-H_0|),\quad
-w(H)=\exp\left(-\frac{d_H^2}{2\sigma_H^2}\right)
-$$
-
-로 두고, 가중 평균 채도
-
-$$
-J_{\mathrm{cyan}}=\frac{\sum S_{\mathrm{out}}\,w(H)}{\sum w(H)}
-$$
-
-를 최소화한다. 목표는 “cyan band 채도가 확실히 낮아지는 것”이다.
-
-#### (2) 2-hue 압축도: $J_{\mathrm{2hue}}$
-
-고채도 픽셀만 대상으로($S_{\mathrm{out}}\ge S_{\min}$) hue가 목표점에 얼마나 모이는지 본다.
-
-원형 거리
-
-$$
-d(H,H_t)=\min(|H-H_t|,180-|H-H_t|)
-$$
-
-를 쓰면,
-
-$$
-J_{\mathrm{2hue}}=\mathbb{E}\left[\min(d(H,H_B),d(H,H_Y))\right]
-$$
-
-가 작을수록 hue가 blue/yellow 목표로 잘 뭉친 것이다.
-
-#### (3) 회색 오염 방지: $J_{\mathrm{gray}}$
-
-입력에서 회색(또는 저채도)인 픽셀($S_{\mathrm{in}}\le S_{\mathrm{gray}}$)이
-출력에서 색이 생기지 않는지 확인한다.
-
-$$
-J_{\mathrm{gray}}=\mathbb{E}\left[S_{\mathrm{out}}\mid S_{\mathrm{in}}\le S_{\mathrm{gray}}\right]
-$$
-
-이 값이 커지면 “회색이 물드는” 오류가 난다.
-
-#### (4) 밝기 보존: $J_Y$
-
-dog 후처리는 색(특히 $H,S$)을 건드리지만, 밝기(V 또는 선형 휘도 Y)는 크게 바뀌면 안 된다.
-선형 RGB에서
-
-$$
-Y=0.2126R+0.7152G+0.0722B
-$$
-
-로 두고, Viénot base 출력과 dog-post 출력의 평균 절대 차이를 본다.
-
-$$
-J_Y=\mathbb{E}\left[|Y_{\mathrm{post}}-Y_{\mathrm{base}}|\right]
-$$
-
----
-
-### 9A.2.5 단일 점수로 묶는 방법(옵션)
-
-랜덤 탐색이나 그리드 탐색을 자동화하고 싶다면 아래처럼 묶는다.
-
-$$
-\mathcal{L}=\lambda_1J_{\mathrm{cyan}}+\lambda_2J_{\mathrm{2hue}}+\lambda_3J_{\mathrm{gray}}+\lambda_4J_Y
-$$
-
-권장 시작 가중치(상대적 중요도): $\lambda_1:\lambda_2:\lambda_3:\lambda_4=4:3:2:1$
-
-- gray band 구현이 dog 차별점의 핵심이므로 $J_{\mathrm{cyan}}$ 비중을 크게 둔다.
-- 회색 오염($J_{\mathrm{gray}}$)은 사용자 체감 품질을 크게 망치므로 중간 이상 비중을 둔다.
-
----
-
-### 9A.2.6 정성 평가 체크(최소 6개)
-
-정량 지표가 좋아도 아래 중 하나라도 망가지면 탈락이다.
-
-- (필수) dog 출력이 cat 출력과 명확히 구분되는가(“그럴듯한 차이”가 보이는가)
-- (필수) sky/sea/cyan 물체가 dog에서 회색화되는 경향이 보이는가
-- (필수) 회색(벽, 아스팔트, 흰 셔츠)이 색으로 오염되지 않는가
-- (권장) 인물 피부가 과도하게 황색/회색으로 죽지 않는가
-- (권장) 채도가 높은 원색에서 밴딩/포스터라이즈가 두드러지지 않는가
-- (권장) 전체적으로 “필터 느낌”이 아니라 “지각 변화 느낌”이 나는가
-
----
-
-## 9A.3 보고서 필수 포함(권장)
-
-- dog 후처리 ON/OFF 비교 이미지(같은 입력)
-- 최종 파라미터 테이블(DogPostParams)
-- 합성 테스트(Hue Wheel, Spectrum Strip, Gray Ramp) 결과 이미지
-
----
-
-## 9A.4 DogPostParams 기본값 추천(시작점)
-
-아래 값은 “dog 논문 제약을 만족시키기 쉬운 시작점”이다.
-환경(이미지 분포, 조명, 디스플레이)에 따라 조정될 수 있으며,
-이 값 자체를 생리 상수로 해석하면 안 된다.
-
-### 9A.4.1 권장 범위와 기본값
-
-| 파라미터 | 권장 범위 | 시작 기본값 | 역할(논문 제약과 연결) |
-|---|---:|---:|---|
-| `cyan_h0` | 95~105 | 100 | 480nm neutral point를 HSV에서 재현하기 위한 중심 |
-| `cyan_sigma` | 8~16 | 12 | 475~485nm “좁은 회색 대역” 폭 |
-| `cyan_desat` | 0.40~0.85 | 0.65 | cyan 대역을 얼마나 gray로 빼는지 |
-| `blue_h` | 110~125 | 120 | 430~475nm를 blue군으로 압축(목표 hue) |
-| `yellow_h` | 25~35 | 30 | 500~620nm를 yellow군으로 압축(목표 hue) |
-| `blue_cutoff` | 85~105 | 95 | blue/yellow 분기 경계(대체로 `cyan_h0` 근처) |
-| `blue_compress` | 0.30~0.75 | 0.55 | blue군 압축 강도(2-hue 강화) |
-| `yellow_compress` | 0.20~0.65 | 0.40 | yellow군 압축 강도 |
-| `sat_global` | 0.75~0.95 | 0.85 | 전체 채도 감소(원추 수 감소로 인한 색감 약화) |
-
-### 9A.4.2 코드로 바로 쓰는 기본값 예시
-
-```python
-DogPostParams(
-    cyan_h0=100.0,
-    cyan_sigma=12.0,
-    cyan_desat=0.65,
-    blue_h=120.0,
-    yellow_h=30.0,
-    blue_cutoff=95.0,
-    blue_compress=0.55,
-    yellow_compress=0.40,
-    sat_global=0.85,
-)
 ```
 
 ### 9A.4.3 기본값에서 “어느 방향으로” 움직이면 되는가(빠른 디버깅)
