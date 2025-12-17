@@ -13,7 +13,10 @@ def decode_upload(file) -> np.ndarray:
     """Decode uploaded file bytes into BGR image (Theory.md §0.2 pipeline step 1)."""
 
     data = np.frombuffer(file.read(), np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("업로드한 파일을 읽을 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다.")
+    return img
 
 
 def resize_by_max_side(bgr: np.ndarray, max_side: int) -> np.ndarray:

@@ -21,7 +21,16 @@ uploaded = st.file_uploader("이미지 업로드", type=["png", "jpg", "jpeg"])
 if uploaded is None:
     st.stop()
 
-bgr = decode_upload(uploaded)
+bgr = None
+try:
+    bgr = decode_upload(uploaded)
+except ValueError as e:
+    st.error(str(e))
+    st.stop()
+
+if bgr is None:
+    st.error("이미지를 불러오지 못했습니다.")
+    st.stop()
 H0, W0 = bgr.shape[:2]
 
 max_side = st.select_slider("처리 해상도(긴 변)", options=[960, 1280, 1920, 2560], value=1280)
@@ -40,8 +49,7 @@ if research_mode and animal == "dog":
         cyan_desat=st.slider("cyan_desat", 0.0, 1.0, float(params.dog_post.cyan_desat)),
         blue_h=st.slider("blue_h(H)", 0.0, 179.0, float(params.dog_post.blue_h)),
         yellow_h=st.slider("yellow_h(H)", 0.0, 179.0, float(params.dog_post.yellow_h)),
-        blue_start=st.slider("blue_start(H)", 0.0, 179.0, float(params.dog_post.blue_start)),
-        blue_end=st.slider("blue_end(H)", 0.0, 179.0, float(params.dog_post.blue_end)),
+        blue_cutoff=st.slider("blue_cutoff(H)", 0.0, 179.0, float(params.dog_post.blue_cutoff)),
         blue_compress=st.slider("blue_compress", 0.0, 1.0, float(params.dog_post.blue_compress)),
         yellow_compress=st.slider("yellow_compress", 0.0, 1.0, float(params.dog_post.yellow_compress)),
         sat_global=st.slider("sat_global", 0.0, 1.0, float(params.dog_post.sat_global)),

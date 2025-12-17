@@ -1065,15 +1065,14 @@ def apply_focus_blur_bgr(bgr_u8: np.ndarray, x0: int, y0: int, p: FocusBlurParam
     s0 = sigma_levels[idx0]
     s1 = sigma_levels[idx1]
     alpha = (sigma - s0) / np.maximum(1e-6, (s1 - s0))
-    alpha3 = alpha[..., None]
 
     out = stack[0].copy()
     for k in range(len(sigma_levels) - 1):
         mask = (idx0 == k)
         if not np.any(mask):
             continue
-        m = mask[..., None]
-        out[m] = (1.0 - alpha3[m]) * stack[k][m] + alpha3[m] * stack[k + 1][m]
+        a = alpha[mask][:, None]
+        out[mask] = (1.0 - a) * stack[k][mask] + a * stack[k + 1][mask]
 
     return np.clip(out, 0, 255).astype(np.uint8)
 ```
@@ -1092,7 +1091,10 @@ from focus_blur import FocusBlurParams, apply_focus_blur_bgr
 
 def decode_upload(uploaded_file):
     data = np.frombuffer(uploaded_file.read(), np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("업로드한 파일을 읽을 수 없습니다. (파일 손상/미지원 형식)")
+    return img
 
 
 st.title("개/고양이 시점 이미지 변환")
