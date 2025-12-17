@@ -850,6 +850,8 @@ LMS 변환과 dichromat 근사를 거치면, 수학적으로는 다음이 쉽게
 * 여러 sigma 레벨로 미리 `GaussianBlur` 결과를 만들고
 * 각 픽셀의 sigma에 맞춰 인접한 두 레벨을 선형 보간
 
+메모리 절약이 필요하면, 동일한 수식을 유지한 채로 “이전/다음 두 레벨만 유지하면서” 스트리밍으로 보간해도 된다. 전체 블러 스택을 한꺼번에 쌓지 않아도 수학적 결과는 동일하며, 고해상도+다중 레벨에서도 OOM을 피할 수 있다.
+
 ---
 
 ## 7.4 논문 모델과 본 프로젝트 근사의 대응(정당화)
@@ -974,15 +976,19 @@ def dog_postprocess_hsv(bgr_u8: np.ndarray, p: DogPostParams) -> np.ndarray:
     S = S * (1.0 - p.cyan_desat * w)
 
     # (B) 2-hue 강제(blue / yellow)
+    def _circular_lerp_hue(H: np.ndarray, Ht: float, beta: float, P: float = 180.0) -> np.ndarray:
+        delta = ((Ht - H + P / 2.0) % P) - P / 2.0
+        return (H + beta * delta) % P
+
     is_blue = (H >= p.blue_cutoff)
     H2 = H.copy()
-    H2[is_blue] = (1.0 - p.blue_compress) * H[is_blue] + p.blue_compress * p.blue_h
-    H2[~is_blue] = (1.0 - p.yellow_compress) * H[~is_blue] + p.yellow_compress * p.yellow_h
+    H2[is_blue] = _circular_lerp_hue(H2[is_blue], p.blue_h, p.blue_compress)
+    H2[~is_blue] = _circular_lerp_hue(H2[~is_blue], p.yellow_h, p.yellow_compress)
 
     # (C) 전체 채도 소폭 감소
     S2 = np.clip(S * p.sat_global, 0.0, 255.0)
 
-    hsv2 = np.stack([np.clip(H2, 0.0, 179.0), S2, V], axis=-1).astype(np.uint8)
+    hsv2 = np.stack([np.clip(H2 % 180.0, 0.0, 179.0), S2, V], axis=-1).astype(np.uint8)
     return cv2.cvtColor(hsv2, cv2.COLOR_HSV2BGR)
 
 
@@ -1014,7 +1020,7 @@ def default_color_params() -> ColorSimParams:
         [0.0,      0.0,     1.0],
     ], dtype=np.float32)
 
-    M_lms2rgb = np.linalg.inv(M_rgb2lms).astype(np.float32)
+    M_lms2rgb = np.linalg.inv(M_rgb2lms.astype(np.float64)).astype(np.float32)
 
     vienot = VienotDeutanParams(
         gamma=2.2,

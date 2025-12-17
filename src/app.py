@@ -1,7 +1,7 @@
 # This file is implemented strictly based on docs/Theory.md
 # Do not modify algorithms without updating Theory.md
 """
-Streamlit entry point implementing UI specified in Theory.md §8.4.
+Streamlit entry point implementing UI specified in Theory.md §8.
 """
 from __future__ import annotations
 
@@ -56,7 +56,8 @@ if research_mode and animal == "dog":
     )
 
 # 3) 색 변환 수행 (Theory.md §0.2, 단계 고정)
-out = simulate_animal_color(bgr, animal, params)
+with st.spinner("색 변환(선형화→LMS→동물 시점) 계산 중…"):
+    out = simulate_animal_color(bgr, animal, params)
 
 # 4) 클릭 기반 초점/심도 (Theory.md §7)
 rgb_disp = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
@@ -73,6 +74,7 @@ pow_p = st.slider("blur falloff p", 1.0, 4.0, 2.0)
 levels = st.slider("blur levels", 6, 20, 12)
 
 if coords is not None:
+    # streamlit-image-coordinates reports click in display space; map back to processed image space
     orig_w = float(coords.get("original_width", W)) or float(W)
     orig_h = float(coords.get("original_height", H)) or float(H)
     disp_w = float(coords.get("displayed_width", coords.get("width", display_width))) or float(display_width)
@@ -88,7 +90,8 @@ if coords is not None:
         p=float(pow_p),
         levels=int(levels),
     )
-    out = apply_focus_blur_bgr(out, x0, y0, blur_p)
+    with st.spinner("초점/심도 블러 합성 중… (다중 sigma 가우시안)"):
+        out = apply_focus_blur_bgr(out, x0, y0, blur_p)
 
 st.subheader("🖼️ Simulation Result")
 st.image(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
