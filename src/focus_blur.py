@@ -65,14 +65,22 @@ def apply_focus_blur_bgr(bgr_u8: np.ndarray, x0: int, y0: int, p: FocusBlurParam
     s0 = sigma_levels[idx0]
     s1 = sigma_levels[idx1]
     alpha = (sigma - s0) / np.maximum(1e-6, (s1 - s0))
-    alpha3 = alpha[..., None]
 
     out = stack[0].copy()
     for k in range(len(sigma_levels) - 1):
         mask = idx0 == k
         if not np.any(mask):
             continue
-        m = mask[..., None]
-        out[m] = (1.0 - alpha3[m]) * stack[k][m] + alpha3[m] * stack[k + 1][m]
+        a = alpha[mask][:, None]
+        out[mask] = (1.0 - a) * stack[k][mask] + a * stack[k + 1][mask]
 
     return np.clip(out, 0, 255).astype(np.uint8)
+
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(42)
+    img = rng.integers(0, 256, size=(240, 320, 3), dtype=np.uint8)
+    params = FocusBlurParams(r0=40.0, r1=180.0, sigma_max=18.0, p=2.0, levels=10)
+    for (x0, y0) in [(0, 0), (160, 120), (319, 239)]:
+        out = apply_focus_blur_bgr(img, x0, y0, params)
+        assert out.shape == img.shape and out.dtype == np.uint8
