@@ -39,7 +39,8 @@ class DogPostParams:
 
     blue_h: float
     yellow_h: float
-    blue_cutoff: float
+    blue_start: float
+    blue_end: float
 
     blue_compress: float
     yellow_compress: float
@@ -127,6 +128,25 @@ def simulate_vienot_deutan(bgr_u8: np.ndarray, p: VienotDeutanParams) -> np.ndar
     return _rgb01_to_bgr(rgb_d)
 
 
+def _is_in_hue_range(h: np.ndarray, start: float, end: float) -> np.ndarray:
+    """Return mask for hues within [start, end] on the circular hue wheel."""
+
+    if start <= end:
+        return (h >= start) & (h <= end)
+    # Wrap-around range (e.g., 170-20)
+    return (h >= start) | (h <= end)
+
+
+def _angular_interpolate(current: np.ndarray, target: float, factor: float) -> np.ndarray:
+    """Interpolate hue angles using the shortest angular distance."""
+
+    delta = target - current
+    delta = np.where(delta > 90.0, delta - 180.0, delta)
+    delta = np.where(delta < -90.0, delta + 180.0, delta)
+    result = current + delta * factor
+    return np.mod(result, 180.0)
+
+
 def dog_postprocess_hsv(bgr_u8: np.ndarray, p: DogPostParams) -> np.ndarray:
     """Dog-specific HSV postprocessing enforcing perceptual constraints (Theory.md §6, §9A)."""
 
@@ -138,11 +158,11 @@ def dog_postprocess_hsv(bgr_u8: np.ndarray, p: DogPostParams) -> np.ndarray:
     w = np.exp(-(dh * dh) / (2.0 * p.cyan_sigma * p.cyan_sigma))
     S = S * (1.0 - p.cyan_desat * w)
 
-    # (B) Two-hue compression toward blue and yellow attractors (2-hue phenomenon)
-    is_blue = (H >= p.blue_cutoff) & (H <= 160.0)
+    # (B) Two-hue compression toward blue and yellow attractors using circular hue interpolation
+    is_blue = _is_in_hue_range(H, p.blue_start, p.blue_end)
     H2 = H.copy()
-    H2[is_blue] = (1.0 - p.blue_compress) * H[is_blue] + p.blue_compress * p.blue_h
-    H2[~is_blue] = (1.0 - p.yellow_compress) * H[~is_blue] + p.yellow_compress * p.yellow_h
+    H2[is_blue] = _angular_interpolate(H[is_blue], p.blue_h, p.blue_compress)
+    H2[~is_blue] = _angular_interpolate(H[~is_blue], p.yellow_h, p.yellow_compress)
 
     # (C) Global saturation scaling to suppress artifacts
     S2 = np.clip(S * p.sat_global, 0.0, 255.0)
@@ -203,15 +223,16 @@ def default_color_params() -> ColorSimParams:
 
     # Visualization parameters (not physiological constants) per Theory.md §9A
     dog_post = DogPostParams(
-        cyan_h0=100.0,
-        cyan_sigma=12.0,
-        cyan_desat=0.65,
-        blue_h=120.0,
-        yellow_h=30.0,
-        blue_cutoff=95.0,
-        blue_compress=0.55,
-        yellow_compress=0.40,
-        sat_global=0.85,
+        cyan_h0=100.0,  # Fix: align with documentation default
+        cyan_sigma=12.0,  # Fix: documentation-aligned sigma
+        cyan_desat=0.65,  # Fix: documentation-aligned desaturation
+        blue_h=120.0,  # Fix: documentation-aligned blue anchor
+        yellow_h=30.0,  # Fix: documentation-aligned yellow anchor
+        blue_start=80.0,  # Fix: switch to range-based blue start
+        blue_end=160.0,  # Fix: switch to range-based blue end
+        blue_compress=0.55,  # Fix: documentation-aligned compression
+        yellow_compress=0.40,  # Fix: documentation-aligned compression
+        sat_global=0.85,  # Fix: documentation-aligned saturation scale
     )
 
     return ColorSimParams(vienot=vienot, dog_post=dog_post)
