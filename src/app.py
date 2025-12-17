@@ -14,7 +14,7 @@ from color_sim import ColorSimParams, DogPostParams, default_color_params, simul
 from focus_blur import FocusBlurParams, apply_focus_blur_bgr
 from utils import bgr_to_png_bytes, decode_upload, resize_by_max_side, resize_to_fit
 
-st.set_page_config(page_title="개/고양이 시점 이미지 변환", layout="wide")
+st.set_page_config(page_title="개/고양이 시점 이미지 변환")
 
 st.markdown(
     """
