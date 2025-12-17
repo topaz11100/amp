@@ -138,17 +138,28 @@ def dog_postprocess_hsv(bgr_u8: np.ndarray, p: DogPostParams) -> np.ndarray:
     w = np.exp(-(dh * dh) / (2.0 * p.cyan_sigma * p.cyan_sigma))
     S = S * (1.0 - p.cyan_desat * w)
 
-    # (B) Two-hue compression toward blue and yellow attractors (linear interpolation)
-    is_blue = H >= p.blue_cutoff
+    # (B) Two-hue compression toward blue and yellow attractors (circular interpolation)
     H2 = H.copy()
-    H2[is_blue] = (1.0 - p.blue_compress) * H[is_blue] + p.blue_compress * p.blue_h
-    H2[~is_blue] = (1.0 - p.yellow_compress) * H[~is_blue] + p.yellow_compress * p.yellow_h
+    is_blue = H >= p.blue_cutoff
+    if np.any(is_blue):
+        H2[is_blue] = _circular_lerp_hue(H2[is_blue], p.blue_h, p.blue_compress)
+    if np.any(~is_blue):
+        H2[~is_blue] = _circular_lerp_hue(
+            H2[~is_blue], p.yellow_h, p.yellow_compress
+        )
 
     # (C) Global saturation scaling to suppress artifacts
     S2 = np.clip(S * p.sat_global, 0.0, 255.0)
 
-    hsv2 = np.stack([np.clip(H2, 0.0, 179.0), S2, V], axis=-1).astype(np.uint8)
+    hsv2 = np.stack([np.clip(H2 % 180.0, 0.0, 179.0), S2, V], axis=-1).astype(np.uint8)
     return cv2.cvtColor(hsv2, cv2.COLOR_HSV2BGR)
+
+
+def _circular_lerp_hue(H: np.ndarray, Ht: float, beta: float, P: float = 180.0) -> np.ndarray:
+    """Interpolate hue on a circular domain (Theory.md §7.2)."""
+
+    delta = ((Ht - H + P / 2.0) % P) - P / 2.0
+    return (H + beta * delta) % P
 
 
 def simulate_animal_color(bgr_u8: np.ndarray, animal: str, p: ColorSimParams) -> np.ndarray:
@@ -190,7 +201,7 @@ def default_color_params() -> ColorSimParams:
     ], dtype=np.float32)
 
     # Derived from theory principle: inverse of Eq.(4)
-    M_lms2rgb = np.linalg.inv(M_rgb2lms).astype(np.float32)
+    M_lms2rgb = np.linalg.inv(M_rgb2lms.astype(np.float64)).astype(np.float32)
 
     vienot = VienotDeutanParams(
         gamma=2.2,
@@ -203,15 +214,15 @@ def default_color_params() -> ColorSimParams:
 
     # Visualization parameters (not physiological constants) per Theory.md §9A
     dog_post = DogPostParams(
-        cyan_h0=90.0,
+        cyan_h0=100.0,
         cyan_sigma=12.0,
-        cyan_desat=0.70,
+        cyan_desat=0.65,
         blue_h=120.0,
         yellow_h=30.0,
         blue_cutoff=95.0,
-        blue_compress=0.70,
-        yellow_compress=0.55,
-        sat_global=0.90,
+        blue_compress=0.55,
+        yellow_compress=0.40,
+        sat_global=0.85,
     )
 
     return ColorSimParams(vienot=vienot, dog_post=dog_post)
